@@ -537,29 +537,67 @@ async function applyDealRatingFilter(page, dealRatings) {
     }
 }
 
-async function applySortByNewest(page) {
-    try {
-        console.log(`🆕 Setting sort order to: Newest listings first`);
+// Which sort is active? Newer SRP renders it as
+//   <span role="textbox" aria-readonly="true" aria-label="Best deals first">Sort by: Best deals first</span>
+// older one as the "Sort by:" combobox button. '' when neither is found.
+async function readSelectedSort(page) {
+    return await page.evaluate(() => {
+        const tb = Array.from(document.querySelectorAll('[role="textbox"][aria-readonly="true"]'))
+            .find((el) => /sort by/i.test(el.textContent || ''));
+        if (tb) return (tb.getAttribute('aria-label') || tb.textContent || '').trim();
+        const cb = document.querySelector('button[role="combobox"][aria-label="Sort by:"]');
+        return cb ? (cb.textContent || '').trim() : '';
+    }).catch(() => '');
+}
 
-        // Click the sort dropdown button to open it
-        const sortButton = page.locator('button[role="combobox"][aria-label="Sort by:"]');
-        await sortButton.waitFor({ state: 'visible', timeout: 90000 });
-        await sortButton.click({ timeout: 90000 });
-
-        console.log(`  ✅ Opened sort dropdown`);
-        await page.waitForTimeout(1000);
-
-        // Click the actual dropdown option (div with role="option")
-        await page.click('div[role="option"]:has-text("Newest listings first")', { timeout: 90000 });
-
-        console.log(`  ✅ Selected "Newest listings first"`);
-        await page.waitForTimeout(2000); // Wait for results to update
+// Open the sort dropdown and pick `optionText`, verifying it actually took.
+// Tries the NEW textbox control first; the ORIGINAL combobox is the fallback.
+// A click only counts once readSelectedSort() confirms it — never assumed.
+async function selectSortOption(page, optionText, isSelected) {
+    const current = await readSelectedSort(page);
+    if (isSelected(current)) {
+        console.log(`  ✅ Already sorted by "${current}"`);
         return true;
-
-    } catch (error) {
-        console.log(`  ❌ Sort by newest failed: ${error.message}`);
-        return false;
     }
+    console.log(`  ℹ️ Current sort: "${current || 'unknown'}"`);
+
+    const controls = [
+        { name: 'new textbox', selector: '[role="textbox"][aria-readonly="true"]:has-text("Sort by")', timeout: 15000 },
+        { name: 'original combobox', selector: 'button[role="combobox"][aria-label="Sort by:"]', timeout: 90000 },
+    ];
+    const optionSelector =
+        `div[role="option"]:has-text("${optionText}"), [role="option"]:has-text("${optionText}"), li:has-text("${optionText}")`;
+
+    for (const control of controls) {
+        try {
+            const sortControl = page.locator(control.selector).first();
+            await sortControl.waitFor({ state: 'visible', timeout: control.timeout });
+            await sortControl.click({ timeout: 90000 });
+            console.log(`  ✅ Opened sort dropdown (${control.name})`);
+            await page.waitForTimeout(1000);
+
+            await page.click(optionSelector, { timeout: 90000 });
+            await page.waitForTimeout(2000); // Wait for results to update
+
+            const selected = await readSelectedSort(page);
+            if (isSelected(selected)) {
+                console.log(`  ✅ Selected "${selected}" (verified)`);
+                return true;
+            }
+            console.log(`  ⚠️ Clicked "${optionText}" via ${control.name} but sort shows "${selected}"`);
+        } catch (error) {
+            console.log(`  ⚠️ Sort via ${control.name} failed: ${error.message}`);
+        }
+        await page.keyboard.press('Escape').catch(() => {});
+    }
+    return false;
+}
+
+async function applySortByNewest(page) {
+    console.log(`🆕 Setting sort order to: Newest listings first`);
+    const ok = await selectSortOption(page, 'Newest listings first', (s) => /newest listings/i.test(s));
+    if (!ok) console.log(`  ❌ Sort by newest failed`);
+    return ok;
 }
 
 // ============================================================
